@@ -1,4 +1,52 @@
 ---
+- name: Check current (remote or local) user
+  set_fact:
+    current_user: "{{ ansible_facts['user_id'] | default(lookup('env', 'USER')) }}"
+    current_uid: "{{ ansible_facts['uid'] | default(lookup('env', 'UID')) }}"
+
+- name: Get current working directory of the current user running the playbook
+  set_fact:
+    current_working_dir: "{{ lookup('env', 'PWD') }}"
+
+- name: Fail if the current working directory is within a managed directory
+  ansible.builtin.fail:
+    msg: "You are inside the directory {{ item }}/. Please move out before proceeding!"
+  when: current_working_dir.startswith(item)
+  loop:
+  - "{{ python_install_dir }}/include/python{{ python_minor }}"
+  - "{{ python_install_dir }}/lib/python{{ python_minor }}"
+  - "{{ python_src_dir }}/Python-{{ python_release }}"
+
+- name: Check existing python_build_group members
+  ansible.builtin.getent:
+    database: group
+    key: "{{ python_build_group }}"
+  register: python_build_group_info
+  ignore_errors: true
+  when:
+    - python_build_user == current_user
+
+- name: When building as current user ensure it is member of python_build_group
+  ansible.builtin.fail:
+    msg: >
+      The existing user {{ current_user }} is not a member of the group {{ python_build_group }}.
+      Please add the user to the group manually (using: sudo usermod -aG {{ python_build_group }} {{ current_user }})
+      before rerunning Ansible.
+  when: python_build_group_info is failed or
+        current_uid not in python_build_group_info.ansible_facts.getent_group[python_build_group][2]
+
+- name: Ensure the Python build group exists
+  ansible.builtin.group:
+    name: "{{ python_build_group }}"
+  become: true
+
+- name: Ensure the Python build user exists
+  ansible.builtin.user:
+    name: "{{ python_build_user }}"
+    group: "{{ python_build_group }}"
+  become: true
+  when: python_build_user != current_user
+
 - name: Create the Python installation group
   ansible.builtin.group:
     name: "{{ python_group }}"
@@ -10,123 +58,22 @@
     group: "{{ python_group }}"
   become: true
 
-- name: Install dependencies (RedHat distros except EL 9 & 10)
-  ansible.builtin.yum:
-    name:
-      - bzip2-devel
-      - gcc
-      - gdbm-devel
-      - libdb
-      - libdb-devel
-      - libffi-devel
-      - libuuid-devel
-      - make
-      - ncurses
-      - ncurses-devel
-      - ncurses-libs
-      - openssl-devel
-      - readline-devel
-      - sqlite-devel
-      - tar
-      - tcl-devel
-      - tk-devel
-      - xz
-      - xz-devel
-    state: present
-  become: true
-  retries: 3
-  delay: 3
-  when: ansible_facts['os_family'] == "RedHat" and ansible_facts['distribution_major_version'] not in ('9', '10')
+- name: Install dependencies
+  include_tasks: "dependencies.yml"
 
-- name: Install dependencies (RedHat EL 9)
-  ansible.builtin.yum:
-    name:
-      - bzip2-devel
-      - gcc
-      - libdb
-      - libdb-devel
-      - libffi-devel
-      - libuuid-devel
-      - make
-      - ncurses
-      - ncurses-devel
-      - ncurses-libs
-      - openssl-devel
-      - readline-devel
-      - sqlite-devel
-      - tar
-      - tcl-devel
-      - tk-devel
-      - xz
-      - xz-devel
-    state: present
-  become: true
-  retries: 3
-  delay: 3
-  when: ansible_facts['os_family'] == "RedHat" and ansible_facts['distribution_major_version'] == '9'
-
-- name: Install dependencies (RedHat EL 10)
-  ansible.builtin.yum:
-    name:
-      - bzip2-devel
-      - gcc
-      - libffi-devel
-      - libuuid-devel
-      - make
-      - ncurses
-      - ncurses-devel
-      - ncurses-libs
-      - openssl-devel
-      - readline-devel
-      - sqlite-devel
-      - tar
-      - tcl-devel
-      - tk-devel
-      - xz
-      - xz-devel
-    state: present
-  become: true
-  retries: 3
-  delay: 3
-  when: ansible_facts['os_family'] == "RedHat" and ansible_facts['distribution_major_version'] == '10'
-
-- name: Install dependencies (Ubuntu)
-  ansible.builtin.apt:
-    name:
-      - libbz2-dev
-      - gcc
-      - libgdbm-dev
-      - libdb-dev
-      - libffi-dev
-      - uuid-dev
-      - make
-      - libncurses-dev
-      - libssl-dev
-      - libreadline-dev
-      - libsqlite3-dev
-      - tar
-      - tcl-dev
-      - tk-dev
-      - libxv-dev
-      - liblzma-dev
-    state: present
-  become: true
-  retries: 3
-  delay: 3
-  when: ansible_facts['distribution'] == "Ubuntu"
-
-- name: Delete source directory
+# Avoid deleting the parent python_src_dir which may contain also other releases
+- name: Delete release source directory
   ansible.builtin.file:
-    path: "{{ python_src_dir }}"
+    path: "{{ python_src_dir }}/Python-{{ python_release }}"
     state: absent
   become: true
   when: python_force
 
-- name: Create source directory
+- name: Create parent source directory
   ansible.builtin.file:
-    group: "{{ python_group }}"
+    group: "{{ python_build_group }}"
     mode: 0755
-    owner: "{{ python_user }}"
+    owner: "{{ python_build_user }}"
     path: "{{ python_src_dir }}"
     state: directory
   become: true
@@ -146,8 +93,8 @@
 - name: Download the source archive
   ansible.builtin.get_url:
     dest: "{{ python_src_dir }}"
-    group: "{{ python_group }}"
-    owner: "{{ python_user }}"
+    group: "{{ python_build_group }}"
+    owner: "{{ python_build_user }}"
     url: "{{ python_url }}"
     mode: 0644
   become: true
@@ -159,8 +106,8 @@
   ansible.builtin.unarchive:
     src: "{{ python_src_dir }}/{{ python_archive }}"
     dest: "{{ python_src_dir }}"
-    group: "{{ python_group }}"
-    owner: "{{ python_user }}"
+    group: "{{ python_build_group }}"
+    owner: "{{ python_build_user }}"
     mode: 0755
     remote_src: true
   become: true
@@ -172,41 +119,40 @@
 
 - name: Run ./configure
   ansible.builtin.command: >
-    ./configure --prefix={{ python_install_dir }}/Python-{{
-    python_minor }} chdir={{ python_src_dir }}/Python-{{ python_release }}
+    ./configure {{ python_configure_options }}
+    chdir={{ python_src_dir }}/Python-{{ python_release }}
   become: true
-  become_user: "{{ python_user }}"
+  become_user: "{{ python_build_user }}"
   register: configure_result
   when: not configure_stat_result.stat.exists
+
+- name: Set the number of parallel make jobs
+  set_fact:
+    python_make_jobs: "{{ ansible_processor_nproc | default(ansible_processor_vcpus, 4) }}"
 
 - name: Run make
   community.general.make:
     chdir: "{{ python_src_dir }}/Python-{{ python_release }}"
+    jobs: "{{ ansible_processor_nproc }}"
   become: true
-  become_user: "{{ python_user }}"
+  become_user: "{{ python_build_user }}"
   register: make_result
   when: configure_result is not skipped
 
-- name: Delete installation directory
-  ansible.builtin.file:
-    path: "{{ python_install_dir }}/Python-{{ python_minor }}"
-    state: absent
-  become: true
-  when: python_force and make_result is not skipped
+- name: Delete installed versioned files and directories
+  include_tasks: "delete_install.yml"
+  when:
+    - python_force
+    - make_result is not skipped
 
 - name: Run make install
   community.general.make:
     chdir: "{{ python_src_dir }}/Python-{{ python_release }}"
-    target: install
+    target: "{{ python_make_install_target | default('install') }}"
   become: true
   register: install_result
   when: make_result is not skipped
 
 - name: Set permissions
-  ansible.builtin.file:
-    path: "{{ python_install_dir }}/Python-{{ python_minor }}"
-    owner: "{{ python_user }}"
-    group: "{{ python_group }}"
-    recurse: true
-  become: true
+  include_tasks: "permissions.yml"
   when: install_result is not skipped

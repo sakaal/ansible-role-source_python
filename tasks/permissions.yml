@@ -1,0 +1,53 @@
+---
+- name: Find installed files matching the version pattern
+  ansible.builtin.find:
+    paths:
+      - "{{ python_install_dir }}/bin"
+      - "{{ python_install_dir }}/lib"
+      - "{{ python_install_dir }}/lib/pkgconfig"
+    patterns:
+      - "idle{{ python_minor }}"
+      - "libpython{{ python_minor }}*"
+      - "pip{{ python_minor }}"
+      - "pydoc{{ python_minor }}"
+      - "python{{ python_minor }}*"
+      - "python-{{ python_minor }}*"
+  register: python_installed
+
+- name: Set permissions for matched Python versioned binaries
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ python_user }}"
+    group: "{{ python_group }}"
+  loop: "{{ python_installed.files }}"
+  become: true
+  when: python_installed.matched > 0
+
+- name: Find installed man pages matching the version pattern
+  ansible.builtin.find:
+    paths:
+      - "{{ python_install_dir }}/share/man/man1"
+    patterns:
+      - "python{{ python_minor }}*"
+  register: python_installed
+
+- name: Set permissions for matched Python versioned man pages
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ python_user }}"
+    group: "{{ python_group }}"
+  loop: "{{ python_installed.files }}"
+  become: true
+  when: python_installed.matched > 0
+
+- name: Set permissions for installed Python versioned directories
+  ansible.builtin.file:
+    path: "{{ python_install_dir }}/{{ item }}/python{{ python_minor }}"
+    owner: "{{ python_user }}"
+    group: "{{ python_group }}"
+    recurse: true
+  become: true
+  loop:
+    - "lib"
+    - "include"
+...

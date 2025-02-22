@@ -1,6 +1,21 @@
 ---
-python_group: python
-python_user: python
-python_src_dir: /sw/python
+python_build_group: "{{ python_build_user }}"
+python_build_user: "{{ ansible_facts['user_id'] | default(lookup('env', 'USER')) }}"
+python_group: root
+python_user: root
+python_src_dir: /usr/local/src/python
 python_release: 3.13.0
-python_install_dir: /opt
+python_install_dir: /usr/local
+python_configure_options: >
+  --enable-optimizations
+  --enable-loadable-sqlite-extensions
+  --with-computed-gotos
+  --with-dbmliborder=bdb:gdbm
+  --with-ensurepip=install
+  --with-lto=full
+  --with-system-ffi
+  --prefix={{ python_install_dir }}
+# [43/44] test_xml_etree and [44/44] test_xml_etree_c fail with python_release 3.13.0 on AlmaLinux 8
+#  --with-system-expat
+python_make_install_target: altinstall
+...
